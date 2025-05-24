@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { format } from 'date-fns';
 import { useWorkoutStore } from '../store/workoutStore';
 import { Workout, Exercise, WorkoutSet } from '../types';
-import { Timer } from './Timer';
-import { Plus, X, Check, Edit2, Trash, StopCircle } from 'lucide-react';
+import { Plus, X, Check, Edit2, Trash, StopCircle, Clock, Calendar, BarChart, Download } from 'lucide-react';
 import { SetRow } from './SetRow';
+import { WorkoutTimer } from './WorkoutTimer';
 
 interface WorkoutViewProps {
   workout: Workout;
@@ -12,45 +12,97 @@ interface WorkoutViewProps {
   onFinishWorkout: () => void;
 }
 
-export const WorkoutView: React.FC<WorkoutViewProps> = ({ 
-  workout, 
-  onClose, 
-  onFinishWorkout 
+// Extend Workout and WorkoutSet types
+declare module '../types' {
+  interface Workout {
+    totalRest?: number;
+    // Add field to store the order and completion time of sets
+    completedSetsOrder?: { setId: string; completedAt: number; }[];
+  }
+  interface WorkoutSet {
+     // No longer storing restTime directly on the set based on new requirements
+     // restTime?: number;
+  }
+}
+
+export const WorkoutView: React.FC<WorkoutViewProps> = ({
+  workout,
+  onClose,
+  onFinishWorkout
 }) => {
-  const { updateWorkout, deleteWorkout, addExercise, workouts } = useWorkoutStore();
+  const { updateWorkout, deleteWorkout, addExercise, workouts, updateSet } = useWorkoutStore();
   const [editMode, setEditMode] = useState(false);
   const [workoutName, setWorkoutName] = useState(workout.name);
-  const [restTimer, setRestTimer] = useState(0);
   const [isWorkoutStarted, setIsWorkoutStarted] = useState(!!workout.startedAt);
   const [newExerciseId, setNewExerciseId] = useState<string | null>(null);
-  const [lastSetCompletedAt, setLastSetCompletedAt] = useState<number | null>(null);
-  const [workoutDuration, setWorkoutDuration] = useState(workout.duration || 0);
+  const [workoutDuration, setWorkoutDuration] = useState(0);
+  const [isFirstSetCompleted, setIsFirstSetCompleted] = useState(false);
+  // Removed totalRestTime state as it will be calculated from completedSetsOrder
+  // const [totalRestTime, setTotalRestTime] = useState(workout.totalRest || 0);
 
+  // State for the ticking rest timer
+  const [currentRestTime, setCurrentRestTime] = useState(0);
+  const [restTimerIntervalId, setRestTimerIntervalId] = useState<number | null>(null);
+
+  // State for the floating header visibility
+  const [showFloatingHeader, setShowFloatingHeader] = useState(false);
+
+  // Get the last completed set timestamp from the workout data
+  const lastCompletedTimestamp = workout.completedSetsOrder && workout.completedSetsOrder.length > 0
+    ? workout.completedSetsOrder[workout.completedSetsOrder.length - 1].completedAt
+    : null;
+
+  // Start/Stop the current rest timer
   useEffect(() => {
-    const hasCompletedSets = workout.exercises.some(exercise => 
-      exercise.sets.some(set => set.completed)
-    );
-    
-    if (hasCompletedSets) {
-      setIsWorkoutStarted(true);
-      if (workout.duration > 0) {
-        setWorkoutDuration(workout.duration);
+    console.log('Rest timer useEffect triggered', { isWorkoutStarted, workoutEnded: workout.endedAt, lastCompletedTimestamp, restTimerIntervalId, completedSetsOrderLength: workout.completedSetsOrder?.length });
+
+    if (isWorkoutStarted && !workout.endedAt && lastCompletedTimestamp !== null && restTimerIntervalId === null) {
+      console.log('Starting rest timer...', { lastCompletedTimestamp });
+      // Start the timer only if workout started, not ended, last set completed, and timer is not already running
+      setCurrentRestTime(0); // Reset timer to 0 when starting
+      const interval = window.setInterval(() => {
+        setCurrentRestTime(Math.floor((Date.now() - lastCompletedTimestamp) / 1000));
+      }, 1000);
+      setRestTimerIntervalId(interval);
+    } else if (restTimerIntervalId !== null && (!isWorkoutStarted || workout.endedAt || lastCompletedTimestamp === null)) {
+      console.log('Stopping rest timer...', { isWorkoutStarted, workoutEnded: workout.endedAt, lastCompletedTimestamp });
+      // Stop the timer if workout ended, not started, or no sets completed, and timer is running
+      window.clearInterval(restTimerIntervalId);
+      setRestTimerIntervalId(null);
+      setCurrentRestTime(0);
+    }
+
+    // Cleanup interval on component unmount or when dependencies change
+    return () => {
+      console.log('Rest timer cleanup...');
+      if (restTimerIntervalId) {
+        window.clearInterval(restTimerIntervalId);
+        setRestTimerIntervalId(null); // Ensure interval ID state is also cleared
       }
-    }
-  }, []); 
+    };
+  }, [isWorkoutStarted, workout.endedAt, lastCompletedTimestamp, workout.completedSetsOrder, restTimerIntervalId]); // Keep restTimerIntervalId as dependency
 
+  // Calculate total rest time from completedSetsOrder (for floating header)
+  const totalRestTime = workout.completedSetsOrder ?
+    workout.completedSetsOrder.reduce((sum, current, index, array) => {
+      if (index === 0) return 0; // First completed set has no preceding rest
+      // Find the timestamp of the previous completed set
+      const previousCompletedSet = array[index - 1];
+      if (!previousCompletedSet) return sum; // Should not happen for index > 0, but safety check
+      const timeAfterPrevious = current.completedAt - previousCompletedSet.completedAt;
+      return sum + timeAfterPrevious;
+    }, 0) / 1000 // Convert milliseconds to seconds
+    : 0;
+
+  // Add scroll event listener for floating header
   useEffect(() => {
-    if (isWorkoutStarted) {
-      const saveInterval = setInterval(() => {
-        updateWorkout({
-          ...workout,
-          duration: workoutDuration
-        });
-      }, 30000);
-      
-      return () => clearInterval(saveInterval);
-    }
-  }, [isWorkoutStarted, workoutDuration, workout, updateWorkout]);
+    const handleScroll = () => {
+      setShowFloatingHeader(window.scrollY > 50);
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   const handleAddExercise = () => {
     const newExercise: Exercise = {
@@ -64,71 +116,138 @@ export const WorkoutView: React.FC<WorkoutViewProps> = ({
 
   const handleEndWorkout = () => {
     const now = Date.now();
+    // Stop current rest timer if running
+    if (restTimerIntervalId) {
+      window.clearInterval(restTimerIntervalId);
+      setRestTimerIntervalId(null);
+      setCurrentRestTime(0);
+    }
+
     updateWorkout({
       ...workout,
       endedAt: now,
       duration: workoutDuration,
+      totalRest: totalRestTime, // Save calculated total rest time
     });
     onFinishWorkout();
   };
 
-  const handleWorkoutTimeUpdate = (seconds: number) => {
-    setWorkoutDuration(seconds);
-  };
-
   const handleSetComplete = (exercise: Exercise, set: WorkoutSet) => {
+    console.log(`handleSetComplete called for set ${set.id}. Completed: ${set.completed}`);
     const now = Date.now();
     const updatedSet = { ...set };
 
+    // Create a deep copy of the workout object to modify
+    const updatedWorkout = JSON.parse(JSON.stringify(workout));
+
+    // Find the exercise and set to update within the copied workout object
+    const exerciseIndex = updatedWorkout.exercises.findIndex((ex: Exercise) => ex.id === exercise.id);
+    if (exerciseIndex === -1) return; // Should not happen
+    const setIndex = updatedWorkout.exercises[exerciseIndex].sets.findIndex((s: WorkoutSet) => s.id === set.id);
+    if (setIndex === -1) return; // Should not happen
+
+    let updatedCompletedSetsOrder = [...(updatedWorkout.completedSetsOrder || [])];
+
     if (!set.completed) {
+      console.log(`Marking set ${set.id} as complete`);
       updatedSet.completed = true;
       updatedSet.completedAt = now;
-      updatedSet.restTime = lastSetCompletedAt ? Math.floor((now - lastSetCompletedAt) / 1000) : 0;
 
-      const isFirstSetOfWorkout = !workout.exercises.some(ex => 
-        ex.sets.some(s => s.completed && s.id !== set.id)
+      // Add the completed set to the order array
+      updatedCompletedSetsOrder.push({ setId: set.id, completedAt: now });
+
+      // Check if this is the first set being completed to start workout timer
+      const isFirstSetOfWorkout = !workout.exercises.some((ex: Exercise) =>
+        ex.sets.some((s: WorkoutSet) => s.completed && s.id !== set.id) // Check for other completed sets excluding the current one
       );
 
-      if (!workout.startedAt && isFirstSetOfWorkout) {
-        updateWorkout({
-          ...workout,
-          startedAt: now,
-        });
+      if (!isFirstSetCompleted && isFirstSetOfWorkout) {
+        console.log('First set of workout completed. Starting workout.');
+        setIsFirstSetCompleted(true);
+        updatedWorkout.startedAt = now;
         setIsWorkoutStarted(true);
       }
 
-      setLastSetCompletedAt(now);
-      setRestTimer(0);
+      // Update the set within the copied workout object
+      updatedWorkout.exercises[exerciseIndex].sets[setIndex] = updatedSet;
+
+      // Update completed sets order on the copied workout object
+      updatedWorkout.completedSetsOrder = updatedCompletedSetsOrder;
+
+      console.log('Updating workout with new completedSetsOrder:', updatedWorkout.completedSetsOrder);
+
+      // Update the workout in the store with the modified copied object
+      updateWorkout(updatedWorkout);
+
     } else {
+      console.log(`Unmarking set ${set.id}`);
       updatedSet.completed = false;
       updatedSet.completedAt = undefined;
-      updatedSet.restTime = undefined;
+
+      // Remove the set from the completed sets order array in the copied workout object
+      updatedWorkout.completedSetsOrder = updatedCompletedSetsOrder.filter(item => item.setId !== set.id);
+
+      // Update the set within the copied workout object
+      updatedWorkout.exercises[exerciseIndex].sets[setIndex] = updatedSet;
+
+       // Update the workout in the store with the modified copied object
+      updateWorkout(updatedWorkout);
+
+      console.log('Updating workout after unmarking. New completedSetsOrder:', updatedWorkout.completedSetsOrder);
+
+       // The useEffect for the rest timer will handle stopping based on lastCompletedTimestamp becoming null if this was the last set
     }
 
-    const updatedExercise = {
-      ...exercise,
-      sets: exercise.sets.map((s) => (s.id === set.id ? updatedSet : s)),
-    };
+    // Note: We are now updating the entire workout object using updateWorkout
+  };
 
-    const updatedWorkout = {
-      ...workout,
-      exercises: workout.exercises.map((e) =>
-        e.id === exercise.id ? updatedExercise : e
-      ),
-    };
+  const handleTimerUpdate = (seconds: number) => {
+    setWorkoutDuration(seconds);
+  };
 
-    updateWorkout(updatedWorkout);
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-4">
+    <div className="min-h-screen bg-gray-900 text-white p-4 pt-16">
+      {showFloatingHeader && (
+        <div className="fixed top-0 left-0 right-0 bg-gray-900 p-2 z-50 border-b border-gray-800 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={onClose} className="p-1 bg-gray-700 rounded-full">
+              <X size={16} />
+            </button>
+            <div className="flex items-center gap-2">
+              {/* Display current rest time in floating header when timer is running */}
+              {isWorkoutStarted && !workout.endedAt && lastCompletedTimestamp !== null ? (
+                 <div className="flex items-center gap-2">
+                   <Clock size={16} className="text-blue-500" />
+                   <span className="text-sm text-gray-400">Rest:</span>
+                   <span className="text-sm font-mono">{formatTime(currentRestTime)}</span>
+                 </div>
+              ) : (
+                 <div className="flex items-center gap-2">
+                   <Clock size={16} className="text-blue-500" />
+                   <span className="text-sm text-gray-400">Total Rest:</span>
+                   {/* Display total rest time in floating header when timer is NOT running */}
+                   <span className="text-sm font-mono">{formatTime(totalRestTime)}</span>
+                 </div>
+              )}
+            </div>
+          </div>
+           <div className="flex items-center gap-2">{/* Add nav icons here */}</div>
+        </div>
+      )}
+
       <div className="flex justify-between items-center mb-6">
         {editMode ? (
           <input
             type="text"
             value={workoutName}
-            onChange={(e) => setWorkoutName(e.target.value)}
-            className="bg-gray-800 text-white px-2 py-1 rounded"
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWorkoutName(e.target.value)}
+            className="bg-gray-800 text-white px-2 py-1 rounded text-2xl font-bold"
           />
         ) : (
           <h1 className="text-2xl font-bold">{workout.name}</h1>
@@ -154,42 +273,40 @@ export const WorkoutView: React.FC<WorkoutViewProps> = ({
           >
             <Trash size={20} />
           </button>
-          <button onClick={onClose} className="p-2 bg-gray-700 rounded-full">
-            <X size={20} />
-          </button>
         </div>
       </div>
+
+      {/* Workout Timer - remains in static area */}
+       <div className="flex items-center gap-2 mb-4">
+         <Clock size={20} className="text-blue-500" />
+         <div>
+           <p className="text-sm text-gray-400">Workout Timer</p>
+           <WorkoutTimer
+             onTimeUpdate={handleTimerUpdate}
+             isRunning={isFirstSetCompleted && !workout.endedAt}
+           />
+         </div>
+       </div>
 
       <div className="mb-6">
         <p className="text-gray-400">
           Date: {format(new Date(workout.date), 'MMMM dd, yyyy')}
         </p>
-        <div className="flex justify-between mt-2">
-          <Timer
-            label="Workout Duration"
-            duration={workoutDuration}
-            isRunning={isWorkoutStarted && !workout.endedAt}
-            onTimeUpdate={handleWorkoutTimeUpdate}
-          />
-          <Timer
-            label="Rest Timer"
-            duration={restTimer}
-            isRunning={isWorkoutStarted && lastSetCompletedAt !== null && !workout.endedAt}
-            onTick={() => setRestTimer((prev) => prev + 1)}
-          />
-        </div>
       </div>
 
-      {workout.exercises.map((exercise, exerciseIndex) => (
+      {workout.exercises.map((exercise: Exercise, exerciseIndex: number) => (
         <ExerciseCard
           key={exercise.id}
           exercise={exercise}
           workoutId={workout.id}
           onSetComplete={handleSetComplete}
           autoFocus={exercise.id === newExerciseId}
-          currentRestTime={restTimer}
           isFirstExercise={exerciseIndex === 0}
           allWorkouts={workouts}
+          // Pass relevant data for rest time display in SetRow
+          completedSetsOrder={workout.completedSetsOrder || []}
+          currentRestTime={currentRestTime}
+          isRestTimerRunning={isWorkoutStarted && !workout.endedAt && lastCompletedTimestamp !== null}
         />
       ))}
 
@@ -201,15 +318,13 @@ export const WorkoutView: React.FC<WorkoutViewProps> = ({
           <Plus size={20} />
           Add Exercise
         </button>
-        {isWorkoutStarted && (
-          <button
-            onClick={handleEndWorkout}
-            className="flex-1 py-3 bg-red-600 rounded-lg flex items-center justify-center gap-2 hover:bg-red-700 transition-colors"
-          >
-            <StopCircle size={20} />
-            End Workout
-          </button>
-        )}
+        <button
+          onClick={handleEndWorkout}
+          className="flex-1 py-3 bg-red-600 rounded-lg flex items-center justify-center gap-2 hover:bg-red-700 transition-colors"
+        >
+          <StopCircle size={20} />
+          End Workout
+        </button>
       </div>
     </div>
   );
@@ -220,9 +335,12 @@ interface ExerciseCardProps {
   workoutId: string;
   onSetComplete: (exercise: Exercise, set: WorkoutSet) => void;
   autoFocus?: boolean;
-  currentRestTime: number;
   isFirstExercise: boolean;
   allWorkouts: Workout[];
+  // Add new props for rest time based on completedSetsOrder
+  completedSetsOrder: { setId: string; completedAt: number; }[];
+  currentRestTime: number;
+  isRestTimerRunning: boolean;
 }
 
 const ExerciseCard: React.FC<ExerciseCardProps> = ({
@@ -230,9 +348,11 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
   workoutId,
   onSetComplete,
   autoFocus,
-  currentRestTime,
   isFirstExercise,
   allWorkouts,
+  completedSetsOrder,
+  currentRestTime,
+  isRestTimerRunning,
 }) => {
   const { updateExercise, deleteExercise } = useWorkoutStore();
   const [editMode, setEditMode] = useState(autoFocus);
@@ -262,19 +382,19 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
   };
 
   const findLastUsedSets = (exerciseName: string): WorkoutSet[] => {
-    const sortedWorkouts = [...allWorkouts].sort((a, b) => 
+    const sortedWorkouts = [...allWorkouts].sort((a, b) =>
       new Date(b.date).getTime() - new Date(a.date).getTime()
     );
 
     for (const workout of sortedWorkouts) {
       if (workout.id === workoutId) continue;
-      
+
       const foundExercise = workout.exercises.find(
-        ex => ex.name.toLowerCase() === exerciseName.toLowerCase()
+        (ex: Exercise) => ex.name.toLowerCase() === exerciseName.toLowerCase()
       );
-      
+
       if (foundExercise && foundExercise.sets.length > 0) {
-        return foundExercise.sets.map(set => ({
+        return foundExercise.sets.map((set: WorkoutSet) => ({
           id: crypto.randomUUID(),
           weight: set.weight,
           reps: set.reps,
@@ -282,16 +402,16 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
         }));
       }
     }
-    
+
     return [];
   };
 
   const handleExerciseNameChange = (value: string) => {
     setExerciseName(value);
-    
+
     const uniqueExercises = new Set<string>();
-    allWorkouts.forEach(workout => {
-      workout.exercises.forEach(ex => {
+    allWorkouts.forEach((workout: Workout) => {
+      workout.exercises.forEach((ex: Exercise) => {
         uniqueExercises.add(ex.name.toLowerCase());
       });
     });
@@ -306,15 +426,15 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
   const handleSuggestionClick = (suggestion: string) => {
     setIsSelectingSuggestion(true);
     setExerciseName(suggestion);
-    
+
     const lastSets = findLastUsedSets(suggestion);
-    
-    updateExercise(workoutId, { 
-      ...exercise, 
+
+    updateExercise(workoutId, {
+      ...exercise,
       name: suggestion,
-      sets: lastSets.length > 0 ? lastSets : exercise.sets 
+      sets: lastSets.length > 0 ? lastSets : exercise.sets
     });
-    
+
     setEditMode(false);
     setSuggestions([]);
     setIsSelectingSuggestion(false);
@@ -329,7 +449,7 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
               ref={inputRef}
               type="text"
               value={exerciseName}
-              onChange={(e) => handleExerciseNameChange(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleExerciseNameChange(e.target.value)}
               onBlur={() => {
                 if (!isSelectingSuggestion) {
                   setTimeout(() => {
@@ -343,7 +463,7 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
             />
             {suggestions.length > 0 && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-gray-700 rounded-lg overflow-hidden z-10">
-                {suggestions.map((suggestion, index) => (
+                {suggestions.map((suggestion: string, index: number) => (
                   <button
                     key={index}
                     className="w-full text-left px-3 py-2 hover:bg-gray-600 capitalize"
@@ -375,16 +495,18 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
       </div>
 
       <div className="space-y-2">
-        {exercise.sets.map((set, index) => (
+        {exercise.sets.map((set: WorkoutSet, setIndex: number) => (
           <SetRow
             key={set.id}
             set={set}
             exercise={exercise}
             workoutId={workoutId}
             onComplete={() => onSetComplete(exercise, set)}
-            restTime={set.completed ? set.restTime : currentRestTime}
-            isFirstSet={index === 0}
+            isFirstSet={setIndex === 0}
             isFirstExercise={isFirstExercise}
+            completedSetsOrder={completedSetsOrder}
+            currentRestTime={currentRestTime}
+            isRestTimerRunning={isRestTimerRunning}
           />
         ))}
       </div>
