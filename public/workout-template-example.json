@@ -1,0 +1,50 @@
+[
+  {
+    "Date": "2024-05-20",
+    "Workout Name": "Upper Body",
+    "Exercise Name": "Bench Press",
+    "Weight": 135,
+    "Reps": 8,
+    "Completed": true
+  },
+  {
+    "Date": "2024-05-20",
+    "Workout Name": "Upper Body",
+    "Exercise Name": "Bench Press",
+    "Weight": 145,
+    "Reps": 6,
+    "Completed": true
+  },
+  {
+    "Date": "2024-05-20",
+    "Workout Name": "Upper Body",
+    "Exercise Name": "Pull-ups",
+    "Weight": 0,
+    "Reps": 10,
+    "Completed": true
+  },
+  {
+    "Date": "2024-05-22",
+    "Workout Name": "Lower Body",
+    "Exercise Name": "Squats",
+    "Weight": 185,
+    "Reps": 8,
+    "Completed": true
+  },
+  {
+    "Date": "2024-05-22",
+    "Workout Name": "Lower Body",
+    "Exercise Name": "Squats",
+    "Weight": 205,
+    "Reps": 6,
+    "Completed": true
+  },
+  {
+    "Date": "2024-05-22",
+    "Workout Name": "Lower Body",
+    "Exercise Name": "Deadlifts",
+    "Weight": 225,
+    "Reps": 5,
+    "Completed": true
+  }
+]
